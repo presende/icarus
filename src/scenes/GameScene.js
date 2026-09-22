@@ -30,9 +30,9 @@ export class GameScene extends Phaser.Scene {
     this.SEA_ZONE = 640;
     this.lastDamageSource = '';
 
-    // Lives & Invulnerability (testing mode: 5 lives)
-    this.maxLives = 5;
-    this.lives = 5;
+    // Lives & Invulnerability (normal mode: 3 lives)
+    this.maxLives = 3;
+    this.lives = 3;
     this.isInvulnerable = false;
     this.invulnerableTimer = 0;
 
@@ -49,9 +49,9 @@ export class GameScene extends Phaser.Scene {
 
     // ── Boss definitions ────────────────────────────────
     this.BOSS_DEFS = [
-      { key: 'medusa', name: 'Medusa', title: 'THE GORGON', triggerScore: 20, duration: 18, bonus: 15, x: 390, y: 360, animSpeed: 300, color: 0xaaff44 },
-      { key: 'zeus', name: 'Zeus', title: 'KING OF OLYMPUS', triggerScore: 120, duration: 22, bonus: 25, x: 380, y: 180, animSpeed: 250, color: 0x44aaff },
-      { key: 'aeolus', name: 'Aeolus', title: 'KEEPER OF THE WINDS', triggerScore: 200, duration: 15, bonus: 10, x: 400, y: 360, animSpeed: 400, color: 0xc0d8e8 },
+      { key: 'aeolus', name: 'Aeolus', title: 'KEEPER OF THE WINDS', triggerScore: 50, duration: 15, bonus: 10, x: 400, y: 360, animSpeed: 400, color: 0xc0d8e8 },
+      { key: 'medusa', name: 'Medusa', title: 'THE GORGON', triggerScore: 120, duration: 18, bonus: 15, x: 390, y: 360, animSpeed: 300, color: 0xaaff44 },
+      { key: 'zeus', name: 'Zeus', title: 'KING OF OLYMPUS', triggerScore: 200, duration: 22, bonus: 25, x: 380, y: 180, animSpeed: 250, color: 0x44aaff },
     ];
     this.bossTriggered = new Set();
     this.boss = { phase: 'none', timer: 0, def: null, sprite: null, projectiles: [], attackTimer: 2, attackIndex: 0, animTimer: 0, animFrame: 0, introElements: [] };
