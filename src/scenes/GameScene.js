@@ -30,9 +30,9 @@ export class GameScene extends Phaser.Scene {
     this.SEA_ZONE = 640;
     this.lastDamageSource = '';
 
-    // Lives & Invulnerability (normal mode: 3 lives)
-    this.maxLives = 3;
-    this.lives = 3;
+    // Single life (1 chance mode)
+    this.maxLives = 1;
+    this.lives = 1;
     this.isInvulnerable = false;
     this.invulnerableTimer = 0;
 
@@ -47,14 +47,16 @@ export class GameScene extends Phaser.Scene {
       { key: 'harpy', name: 'Harpy', minScore: 12, speedMul: 1.8, animSpeed: 200, sineAmp: () => Phaser.Math.Between(35, 65), sineSpeed: () => Phaser.Math.FloatBetween(2.0, 3.5), bob: false },
     ];
 
-    // ── Boss definitions ────────────────────────────────
-    this.BOSS_DEFS = [
-      { key: 'aeolus', name: 'Aeolus', title: 'KEEPER OF THE WINDS', triggerScore: 50, duration: 15, bonus: 10, x: 400, y: 360, animSpeed: 400, color: 0xc0d8e8 },
-      { key: 'medusa', name: 'Medusa', title: 'THE GORGON', triggerScore: 120, duration: 18, bonus: 15, x: 390, y: 360, animSpeed: 300, color: 0xaaff44 },
-      { key: 'zeus', name: 'Zeus', title: 'KING OF OLYMPUS', triggerScore: 200, duration: 22, bonus: 25, x: 380, y: 180, animSpeed: 250, color: 0x44aaff },
+    // ── Boss definitions & repeating rounds ─────────────
+    this.BOSS_BASE_DEFS = [
+      { key: 'aeolus', name: 'Aeolus', title: 'KEEPER OF THE WINDS', triggerOffset: 50, duration: 15, bonus: 10, x: 400, y: 360, animSpeed: 400, color: 0xc0d8e8 },
+      { key: 'medusa', name: 'Medusa', title: 'THE GORGON', triggerOffset: 120, duration: 18, bonus: 15, x: 390, y: 360, animSpeed: 300, color: 0xaaff44 },
+      { key: 'zeus', name: 'Zeus', title: 'KING OF OLYMPUS', triggerOffset: 200, duration: 22, bonus: 25, x: 380, y: 180, animSpeed: 250, color: 0x44aaff },
     ];
-    this.bossTriggered = new Set();
-    this.boss = { phase: 'none', timer: 0, def: null, sprite: null, projectiles: [], attackTimer: 2, attackIndex: 0, animTimer: 0, animFrame: 0, introElements: [] };
+    this.bossRound = 1;
+    this.currentBossIndex = 0;
+    this.nextBossTriggerScore = 50;
+    this.boss = { phase: 'none', timer: 0, def: null, sprite: null, projectiles: [], attackTimer: 2, attackIndex: 0, animTimer: 0, animFrame: 0, introElements: [], speedMultiplier: 1.0 };
 
     // ── Build world ─────────────────────────────────────
     this.createBackground();
@@ -182,21 +184,22 @@ export class GameScene extends Phaser.Scene {
 
   checkBossTrigger() {
     if (this.boss.phase !== 'none') return;
-    for (const def of this.BOSS_DEFS) {
-      if (this.score >= def.triggerScore && !this.bossTriggered.has(def.key)) {
-        this.bossTriggered.add(def.key);
-        this.startBossEncounter(def);
-        return;
-      }
+    if (this.score >= this.nextBossTriggerScore) {
+      const baseDef = this.BOSS_BASE_DEFS[this.currentBossIndex];
+      this.startBossEncounter(baseDef, this.bossRound);
     }
   }
 
-  startBossEncounter(def) {
-    this.boss.def = def;
+  startBossEncounter(baseDef, round) {
+    // Speed multiplier scales up with each new round (e.g. +20% per round: 1.0, 1.2, 1.4...)
+    const speedMultiplier = 1.0 + (round - 1) * 0.2;
+
+    this.boss.def = { ...baseDef };
+    this.boss.speedMultiplier = speedMultiplier;
     this.boss.phase = 'warning';
     this.boss.timer = 2.0;
     this.boss.projectiles = [];
-    this.boss.attackTimer = 2.5;
+    this.boss.attackTimer = 2.5 / speedMultiplier;
     this.boss.attackIndex = 0;
     this.boss.animTimer = 0;
     this.boss.animFrame = 0;
@@ -215,10 +218,12 @@ export class GameScene extends Phaser.Scene {
     const def = this.boss.def;
     this.boss.sprite = this.add.image(580, def.y, def.key).setScale(3).setDepth(11);
     this.tweens.add({ targets: this.boss.sprite, x: def.x, duration: 1200, ease: 'Power2' });
-    const nt = this.add.text(240, 280, def.name.toUpperCase(), {
-      fontFamily: '"Press Start 2P", monospace', fontSize: '20px', color: '#FFD700', stroke: '#000000', strokeThickness: 5,
+
+    const roundText = this.bossRound > 1 ? ` (ROUND ${this.bossRound})` : '';
+    const nt = this.add.text(240, 275, `${def.name.toUpperCase()}${roundText}`, {
+      fontFamily: '"Press Start 2P", monospace', fontSize: this.bossRound > 1 ? '16px' : '20px', color: '#FFD700', stroke: '#000000', strokeThickness: 5,
     }).setOrigin(0.5).setDepth(29);
-    const tt = this.add.text(240, 310, def.title, {
+    const tt = this.add.text(240, 305, def.title, {
       fontFamily: '"Press Start 2P", monospace', fontSize: '9px', color: '#ff4444', stroke: '#000000', strokeThickness: 2,
     }).setOrigin(0.5).setDepth(29);
     this.boss.introElements = [nt, tt];
@@ -263,38 +268,39 @@ export class GameScene extends Phaser.Scene {
   updateBossBattle(time, delta) {
     const dt = delta / 1000;
     const def = this.boss.def;
+    const spdMul = this.boss.speedMultiplier || 1.0;
 
     // Animation
     this.boss.animTimer += delta;
-    if (this.boss.animTimer >= def.animSpeed) {
-      this.boss.animTimer -= def.animSpeed;
+    if (this.boss.animTimer >= (def.animSpeed / spdMul)) {
+      this.boss.animTimer -= (def.animSpeed / spdMul);
       this.boss.animFrame = 1 - this.boss.animFrame;
       if (this.boss.sprite) this.boss.sprite.setTexture(this.boss.animFrame === 0 ? def.key : def.key + '_flap');
     }
 
     // Idle movement
     if (this.boss.sprite) {
-      if (def.key === 'aeolus') this.boss.sprite.y = def.y + Math.sin(time / 1000 * 0.8) * 30;
-      else if (def.key === 'medusa') this.boss.sprite.x = def.x + Math.sin(time / 1000 * 0.6) * 15;
+      if (def.key === 'aeolus') this.boss.sprite.y = def.y + Math.sin(time / 1000 * 0.8 * spdMul) * 30;
+      else if (def.key === 'medusa') this.boss.sprite.x = def.x + Math.sin(time / 1000 * 0.6 * spdMul) * 15;
     }
 
-    // Attack scheduling
+    // Attack scheduling (faster attacks with speedMultiplier)
     this.boss.attackTimer -= dt;
     if (this.boss.attackTimer <= 0) {
       const idx = this.boss.attackIndex;
       this.boss.attackIndex = 1 - idx;
       switch (def.key) {
         case 'aeolus':
-          if (idx === 0) { this.atkAeolusGust(); this.boss.attackTimer = 3.5; }
-          else { this.atkAeolusVortex(); this.boss.attackTimer = 5; }
+          if (idx === 0) { this.atkAeolusGust(); this.boss.attackTimer = 3.5 / spdMul; }
+          else { this.atkAeolusVortex(); this.boss.attackTimer = 5.0 / spdMul; }
           break;
         case 'medusa':
-          if (idx === 0) { this.atkMedusaGaze(); this.boss.attackTimer = 6.0; }
-          else { this.atkMedusaSerpents(); this.boss.attackTimer = 4.5; }
+          if (idx === 0) { this.atkMedusaGaze(); this.boss.attackTimer = 6.0 / spdMul; }
+          else { this.atkMedusaSerpents(); this.boss.attackTimer = 4.5 / spdMul; }
           break;
         case 'zeus':
-          if (idx === 0) { this.atkZeusLightning(); this.boss.attackTimer = 4.5; }
-          else { this.atkZeusStorm(); this.boss.attackTimer = 7; }
+          if (idx === 0) { this.atkZeusLightning(); this.boss.attackTimer = 4.5 / spdMul; }
+          else { this.atkZeusStorm(); this.boss.attackTimer = 7.0 / spdMul; }
           break;
       }
     }
@@ -309,6 +315,16 @@ export class GameScene extends Phaser.Scene {
   bossSurvived() {
     this.score += this.boss.def.bonus;
     this.disperseBossPowers();
+
+    // Advance to next boss in sequence and handle repeating rounds
+    this.currentBossIndex++;
+    if (this.currentBossIndex >= this.BOSS_BASE_DEFS.length) {
+      this.currentBossIndex = 0;
+      this.bossRound++;
+    }
+    // Schedule next boss trigger maintaining the exact same cadence
+    const baseOffset = this.BOSS_BASE_DEFS[this.currentBossIndex].triggerOffset;
+    this.nextBossTriggerScore = (this.bossRound - 1) * 200 + baseOffset;
 
     const t1 = this.add.text(240, 280, 'SURVIVED!', { fontFamily: '"Press Start 2P", monospace', fontSize: '24px', color: '#44dd44', stroke: '#000000', strokeThickness: 5 }).setOrigin(0.5).setDepth(29);
     const t2 = this.add.text(240, 318, `+${this.boss.def.bonus} FEATHERS`, { fontFamily: '"Press Start 2P", monospace', fontSize: '12px', color: '#FFD700', stroke: '#000000', strokeThickness: 3 }).setOrigin(0.5).setDepth(29);
@@ -369,9 +385,10 @@ export class GameScene extends Phaser.Scene {
         });
       }
 
-      // Vortex (Aeolus)
+      // Vortex / Tornado (Aeolus)
       else if (p.type === 'vortex' && p.gfx && p.gfx.active) {
         this.goldenParticles.explode(10, p.x, p.y);
+        p.debris = [];
         this.tweens.add({
           targets: p.gfx,
           alpha: 0,
@@ -422,6 +439,7 @@ export class GameScene extends Phaser.Scene {
       if (p.sprite && p.sprite.active) p.sprite.destroy();
       if (p.sparks) p.sparks.forEach(s => { if (s && s.active) s.destroy(); });
       if (p.rainDrops) p.rainDrops = [];
+      if (p.debris) p.debris = [];
     });
     this.boss.projectiles = [];
     if (this.boss.sprite && this.boss.sprite.active) { this.boss.sprite.destroy(); this.boss.sprite = null; }
@@ -437,27 +455,42 @@ export class GameScene extends Phaser.Scene {
   // Boss Attacks — Creation
   // ════════════════════════════════════════════════════════
 
-  /** Aeolus: horizontal wind band that pushes Icarus up or down */
+  /** Aeolus: horizontal wind band that pushes Icarus and batters his wings */
   atkAeolusGust() {
+    const spdMul = this.boss.speedMultiplier || 1.0;
     this.boss.projectiles.push({
       type: 'wind_gust',
       y: Phaser.Math.Between(180, 520),
-      height: 180,
+      height: 190,
       pushDir: Math.random() < 0.5 ? -1 : 1,
-      pushForce: 400,
+      pushForce: 420 * spdMul,
+      wingDamage: 22 * spdMul, // Directly wears down wing health!
       age: 0,
       gfx: this.add.graphics().setDepth(12),
     });
   }
 
-  /** Aeolus: vortex that pulls Icarus toward its center (Y-axis) */
+  /** Aeolus: tornado that spawns horizontally aligned with Icarus, varies in size, launches player, and explodes monsters */
   atkAeolusVortex() {
+    const spdMul = this.boss.speedMultiplier || 1.0;
+    // Always horizontal aligned with Icarus (x ≈ 100), varying size (height 180 to 320, width 45 to 80)
+    const tWidth = Phaser.Math.Between(50, 80);
+    const tHeight = Phaser.Math.Between(180, 320);
+    const targetY = Phaser.Math.Clamp(this.icarus.y + Phaser.Math.Between(-40, 40), this.SUN_ZONE + 90, this.SEA_ZONE - 90);
+    // Launch direction: either up (-1) or down (1)
+    const launchDir = Math.random() < 0.5 ? -1 : 1;
+
     this.boss.projectiles.push({
       type: 'vortex',
-      x: Phaser.Math.Between(100, 320),
-      y: Phaser.Math.Between(this.SUN_ZONE + 80, this.SEA_ZONE - 80),
-      radius: 70, deathRadius: 18, pullForce: 280,
-      age: 0, gfx: this.add.graphics().setDepth(12),
+      x: this.icarus.x, // horizontally aligned with character
+      y: targetY,
+      width: tWidth,
+      height: tHeight,
+      launchDir,
+      launchedPlayer: false,
+      debris: [],
+      age: 0,
+      gfx: this.add.graphics().setDepth(12),
     });
   }
 
@@ -472,7 +505,8 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Shortly followed by the serpent missiles!
-    this.time.delayedCall(1500, () => {
+    const spdMul = this.boss.speedMultiplier || 1.0;
+    this.time.delayedCall(1500 / spdMul, () => {
       if (this.isGameOver || this.boss.phase !== 'battle') return;
       this.atkMedusaSerpents();
     });
@@ -480,18 +514,19 @@ export class GameScene extends Phaser.Scene {
 
   /** Medusa: fan of snake projectiles */
   atkMedusaSerpents() {
+    const spdMul = this.boss.speedMultiplier || 1.0;
     const count = Phaser.Math.Between(3, 5);
     const cx = this.boss.sprite ? this.boss.sprite.x - 20 : 380;
     const cy = this.boss.sprite ? this.boss.sprite.y : 360;
     for (let i = 0; i < count; i++) {
       const frac = count === 1 ? 0 : (i / (count - 1) - 0.5) * 2;
       const rad = Phaser.Math.DegToRad(180 + frac * 25);
-      const spd = 180;
+      const spd = 180 * spdMul;
       this.boss.projectiles.push({
         type: 'snake',
         sprite: this.add.image(cx, cy, 'snake').setScale(3).setDepth(12),
         vx: Math.cos(rad) * spd, baseVy: Math.sin(rad) * spd,
-        wiggleAmp: 25, wiggleSpeed: Phaser.Math.FloatBetween(3, 5),
+        wiggleAmp: 25, wiggleSpeed: Phaser.Math.FloatBetween(3, 5) * spdMul,
         wiggleOffset: Phaser.Math.FloatBetween(0, Math.PI * 2), age: 0,
       });
     }
@@ -499,9 +534,10 @@ export class GameScene extends Phaser.Scene {
 
   /** Zeus: radial straight lightning bolts angled by 30 degrees from his center */
   atkZeusLightning() {
+    const spdMul = this.boss.speedMultiplier || 1.0;
     const salvos = [
       { delay: 0, angles: [90, 120, 150, 180, 210, 240] },
-      { delay: 1400, angles: [105, 135, 165, 195, 225] },
+      { delay: 1400 / spdMul, angles: [105, 135, 165, 195, 225] },
     ];
 
     salvos.forEach((s) => {
@@ -525,15 +561,16 @@ export class GameScene extends Phaser.Scene {
 
   /** Zeus: drifting thunderstorm cloud with rain that drenches wings and deadly lightning inside */
   atkZeusStorm() {
+    const spdMul = this.boss.speedMultiplier || 1.0;
     this.boss.projectiles.push({
       type: 'storm_cloud',
       x: 540,
       y: Phaser.Math.Between(this.SUN_ZONE + 80, this.SEA_ZONE - 120),
-      speed: 65,
+      speed: 65 * spdMul,
       rainDrops: [],
       rainTimer: 0,
       age: 0,
-      lifetime: 11,
+      lifetime: 11 / spdMul,
       gfx: this.add.graphics().setDepth(13),
     });
   }
@@ -606,38 +643,195 @@ export class GameScene extends Phaser.Scene {
       }
       if (this.icarus.y > p.y - p.height / 2 && this.icarus.y < p.y + p.height / 2) {
         this.icarus.body.velocity.y += p.pushDir * p.pushForce * dt;
+        // The wind also batters and reduces wings!
+        if (!this.isInvulnerable) {
+          this.wingHealth -= (p.wingDamage || 22) * dt;
+          this.lastDamageSource = 'wind';
+          if (Math.random() < 0.25) {
+            this.featherParticles.explode(1, this.icarus.x + Phaser.Math.Between(-10, 10), this.icarus.y);
+          }
+        }
       }
     } else { p.gfx.destroy(); p.dead = true; }
   }
 
   _updVortex(p, time, dt) {
-    const TELE = 1.0, ACTIVE = 3.0;
+    const TELE = 0.85, ACTIVE = 2.4;
+    const topY = p.y - p.height / 2;
+    const botY = p.y + p.height / 2;
+
+    // Update any existing monster explosion debris
+    if (p.debris && p.debris.length > 0) {
+      for (let dIdx = p.debris.length - 1; dIdx >= 0; dIdx--) {
+        const d = p.debris[dIdx];
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+        d.age += dt;
+
+        // Check fatal collision with Icarus
+        if (!this.isInvulnerable && !this.isGameOver) {
+          const distToIcarus = Phaser.Math.Distance.Between(d.x, d.y, this.icarus.x, this.icarus.y);
+          if (distToIcarus < 18) {
+            this.takeHit('Struck by flying monster debris from the tornado!');
+            return;
+          }
+        }
+
+        if (d.x < -40 || d.x > 520 || d.y < -40 || d.y > 760 || d.age > 3.0) {
+          p.debris.splice(dIdx, 1);
+        }
+      }
+    }
+
     if (p.age < TELE) {
+      // ── Telegraph: rising air currents & swirling funnel outline ──
       p.gfx.clear();
-      const a = 0.1 + 0.12 * Math.sin(p.age * 10);
-      p.gfx.lineStyle(2, 0xc0d8e8, a);
-      p.gfx.strokeCircle(p.x, p.y, p.radius * (1 - p.age / TELE * 0.4));
-      p.gfx.strokeCircle(p.x, p.y, p.radius * 0.5 * (1 - p.age / TELE * 0.3));
+      const progress = p.age / TELE;
+      const alpha = 0.15 + 0.15 * Math.sin(p.age * 16);
+
+      // Draw faint forming tornado silhouette
+      const steps = 12;
+      for (let s = 0; s < steps; s++) {
+        const frac = s / (steps - 1);
+        const curY = Phaser.Math.Linear(topY, botY, frac);
+        const curW = Phaser.Math.Linear(p.width * 1.2, p.width * 0.35, frac) * progress;
+        p.gfx.lineStyle(1.5, 0xc0d8e8, alpha * (0.5 + 0.5 * frac));
+        p.gfx.strokeEllipse(p.x, curY, curW, 10);
+      }
     } else if (p.age < TELE + ACTIVE) {
+      // ── Active Tornado: Violent spinning funnel ──
       p.gfx.clear();
-      const t = p.age - TELE;
-      for (let r = p.radius; r > p.deathRadius; r -= 12) {
-        const a = 0.08 + 0.06 * Math.sin(t * 5 + r * 0.15);
-        p.gfx.lineStyle(2, 0xc0d8e8, a);
-        p.gfx.strokeCircle(p.x, p.y, r);
+      const activeAge = p.age - TELE;
+      const spinSpeed = 14;
+      const steps = 22;
+
+      for (let s = 0; s < steps; s++) {
+        const frac = s / (steps - 1);
+        const curY = Phaser.Math.Linear(topY, botY, frac);
+        // Funnel shape: wide top, narrow twisting base
+        const baseW = Phaser.Math.Linear(p.width * 1.3, p.width * 0.3, frac);
+        const wave = Math.sin(activeAge * spinSpeed + s * 0.45) * (baseW * 0.35);
+        const ringAlpha = 0.25 + 0.15 * Math.sin(activeAge * 8 + s * 0.5);
+
+        // Funnel bands
+        p.gfx.lineStyle(2.5, 0xe0f0ff, ringAlpha);
+        p.gfx.strokeEllipse(p.x + wave, curY, baseW, 12);
+
+        // Core wind fill
+        p.gfx.fillStyle(0xc0d8e8, ringAlpha * 0.4);
+        p.gfx.fillEllipse(p.x + wave, curY, baseW * 0.8, 8);
       }
-      p.gfx.fillStyle(0xffffff, 0.15 + 0.1 * Math.sin(t * 8));
-      p.gfx.fillCircle(p.x, p.y, p.deathRadius);
-      // Pull (Y-axis)
-      const dy = p.y - this.icarus.y;
-      const dist = Math.abs(dy);
-      if (dist < p.radius) {
-        this.icarus.body.velocity.y += Math.sign(dy) * p.pullForce * (1 - dist / p.radius) * dt;
+
+      // ── Check if any Monster enters the tornado → EXPLODES INTO LETHAL PIECES! ──
+      for (let mIdx = this.monsters.length - 1; mIdx >= 0; mIdx--) {
+        const m = this.monsters[mIdx];
+        if (!m || !m.active) continue;
+
+        // Check if monster intersects tornado vertical funnel
+        if (Math.abs(m.x - p.x) < p.width * 0.75 && m.y >= topY - 20 && m.y <= botY + 20) {
+          // MONSTER EXPLODES!
+          const mx = m.x, my = m.y;
+          const monName = m.monsterName || 'creature';
+          m.destroy();
+          this.monsters.splice(mIdx, 1);
+
+          this.cameras.main.shake(200, 0.018);
+          this.cameras.main.flash(100, 255, 180, 180);
+
+          // Feather and gore particle explosion
+          this.featherParticles.explode(15, mx, my);
+          this.goldenParticles.explode(8, mx, my);
+
+          // Floating text "OBLITERATED!"
+          const oblTxt = this.add.text(mx, my - 20, 'OBLITERATED!', {
+            fontFamily: '"Press Start 2P", monospace',
+            fontSize: '9px',
+            color: '#ff4444',
+            stroke: '#000000',
+            strokeThickness: 3,
+          }).setOrigin(0.5).setDepth(28);
+          this.tweens.add({
+            targets: oblTxt,
+            y: oblTxt.y - 25,
+            alpha: 0,
+            duration: 800,
+            onComplete: () => oblTxt.destroy(),
+          });
+
+          // Spawn lethal monster shrapnel flying out in all directions
+          const shardCount = 8;
+          for (let k = 0; k < shardCount; k++) {
+            const angle = (k / shardCount) * Math.PI * 2 + Phaser.Math.FloatBetween(-0.3, 0.3);
+            const speed = Phaser.Math.Between(200, 360);
+            p.debris.push({
+              x: mx,
+              y: my,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              age: 0,
+              rot: Phaser.Math.FloatBetween(0, Math.PI * 2),
+            });
+          }
+        }
       }
-      if (dist < p.deathRadius && Math.abs(this.icarus.x - p.x) < 50) {
-        this.takeHit('Torn apart by the winds!');
+
+      // ── Render lethal monster debris shards ──
+      if (p.debris && p.debris.length > 0) {
+        p.debris.forEach(d => {
+          p.gfx.fillStyle(0x8b0000, 0.95); // dark blood red/bone
+          p.gfx.fillRect(d.x - 4, d.y - 4, 8, 8);
+          p.gfx.fillStyle(0xffaa44, 0.9); // bone/feather fragment highlight
+          p.gfx.fillRect(d.x - 2, d.y - 2, 4, 4);
+        });
       }
-    } else { p.gfx.destroy(); p.dead = true; }
+
+      // ── Check if Icarus is caught by the tornado → Launch super close to top or bottom! ──
+      const dx = Math.abs(this.icarus.x - p.x);
+      const inTornadoY = this.icarus.y >= topY - 25 && this.icarus.y <= botY + 25;
+
+      if (dx < p.width * 0.7 && inTornadoY && !p.launchedPlayer && !this.isGameOver) {
+        p.launchedPlayer = true;
+        this.cameras.main.shake(250, 0.02);
+
+        // Launch by percentage of screen size (e.g. 50-65% screen height displacement)
+        // making Icarus super close to top (SUN_ZONE) or bottom (SEA_ZONE)
+        const targetLaunchY = p.launchDir === -1
+          ? Phaser.Math.Between(this.SUN_ZONE + 12, this.SUN_ZONE + 35)  // close to top sun zone
+          : Phaser.Math.Between(this.SEA_ZONE - 35, this.SEA_ZONE - 15); // close to bottom sea zone
+
+        const launchVelocityY = p.launchDir === -1 ? -520 : 460;
+        this.icarus.setVelocityY(launchVelocityY);
+
+        // Smoothly tween/propel Icarus close to the threshold
+        this.tweens.add({
+          targets: this.icarus,
+          y: targetLaunchY,
+          duration: 350,
+          ease: 'Cubic.easeOut',
+        });
+
+        // Whirlwind feedback
+        this.featherParticles.explode(8, this.icarus.x, this.icarus.y);
+        const launchText = this.add.text(this.icarus.x, this.icarus.y - 20, p.launchDir === -1 ? 'UPRAFT!' : 'DOWNBURST!', {
+          fontFamily: '"Press Start 2P", monospace',
+          fontSize: '10px',
+          color: '#c0d8e8',
+          stroke: '#000000',
+          strokeThickness: 3,
+        }).setOrigin(0.5).setDepth(27);
+        this.tweens.add({
+          targets: launchText,
+          y: launchText.y + (p.launchDir === -1 ? -30 : 30),
+          alpha: 0,
+          duration: 700,
+          onComplete: () => launchText.destroy(),
+        });
+      }
+    } else {
+      // Finished tornado
+      p.gfx.destroy();
+      p.dead = true;
+    }
   }
 
   _updGaze(p, time, dt) {
@@ -920,104 +1114,21 @@ export class GameScene extends Phaser.Scene {
     this.healthBar = this.add.graphics().setDepth(31);
     this.add.text(18, 36, 'WINGS', { fontFamily: '"Press Start 2P", monospace', fontSize: '7px', color: '#ffffff' }).setDepth(31);
 
-    // Lives display
-    this.add.text(18, 52, 'LIVES', { fontFamily: '"Press Start 2P", monospace', fontSize: '7px', color: '#ffaaaa' }).setDepth(31);
-    this.livesGfx = this.add.graphics().setDepth(31);
-    this.updateLivesUI();
-
     this.warningText = this.add.text(240, 360, '', { fontFamily: '"Press Start 2P", monospace', fontSize: '12px', color: '#ff4444', stroke: '#000000', strokeThickness: 3 }).setOrigin(0.5).setDepth(30).setAlpha(0);
     // Boss timer bar (drawn during battle)
     this.bossTimerBar = this.add.graphics().setDepth(31);
     this.bossTimerBg = this.add.graphics().setDepth(30);
   }
 
-  updateLivesUI() {
-    if (!this.livesGfx) return;
-    this.livesGfx.clear();
-    const startX = 64;
-    const startY = 50;
-    for (let i = 0; i < this.maxLives; i++) {
-      const active = i < this.lives;
-      this.drawHeart(this.livesGfx, startX + i * 16, startY, active);
-    }
-  }
-
-  drawHeart(g, x, y, active) {
-    g.fillStyle(active ? 0xff3344 : 0x3d1a24);
-    // Row 0
-    g.fillRect(x + 2, y, 4, 2);
-    g.fillRect(x + 8, y, 4, 2);
-    // Row 1
-    g.fillRect(x, y + 2, 14, 2);
-    // Row 2
-    g.fillRect(x, y + 4, 14, 2);
-    // Row 3
-    g.fillRect(x + 2, y + 6, 10, 2);
-    // Row 4
-    g.fillRect(x + 4, y + 8, 6, 2);
-    // Row 5
-    g.fillRect(x + 6, y + 10, 2, 2);
-
-    if (active) {
-      g.fillStyle(0xff8899);
-      g.fillRect(x + 2, y + 2, 2, 2);
-    }
-  }
-
   // ════════════════════════════════════════════════════════
-  // Collision & Damage / Lives
+  // Collision & Damage (Single Chance / 1 Life)
   // ════════════════════════════════════════════════════════
 
   takeHit(reason) {
     if (this.isGameOver || this.isInvulnerable) return;
 
-    this.lives -= 1;
-    this.updateLivesUI();
-
-    // Flash & shake
-    this.cameras.main.flash(200, 255, 120, 120);
-    this.cameras.main.shake(180, 0.015);
-    for (let i = 0; i < 10; i++) {
-      this.featherParticles.explode(1, this.icarus.x, this.icarus.y);
-    }
-
-    // Floating text "-1 LIFE"
-    const pop = this.add.text(this.icarus.x, this.icarus.y - 20, '-1 LIFE', {
-      fontFamily: '"Press Start 2P", monospace',
-      fontSize: '11px',
-      color: '#ff4444',
-      stroke: '#000000',
-      strokeThickness: 3,
-    }).setOrigin(0.5).setDepth(26);
-    this.tweens.add({
-      targets: pop,
-      y: pop.y - 30,
-      alpha: 0,
-      duration: 800,
-      onComplete: () => pop.destroy(),
-    });
-
-    if (this.lives <= 0) {
-      this.triggerGameOver(reason);
-      return;
-    }
-
-    // Still have lives! Recover player & grant 2s invulnerability
-    this.wingHealth = 100;
-    this.lastDamageSource = '';
-    this.isInvulnerable = true;
-    this.invulnerableTimer = 2.0;
-    this.petrified = false;
-    this.petrifyTimer = 0;
-    this.icarus.x = 100;
-    this.icarus.body.allowGravity = true;
-    this.icarus.clearTint();
-
-    // Reposition if out of bounds or near edges
-    if (this.icarus.y < this.SUN_ZONE + 30 || this.icarus.y > this.SEA_ZONE - 30) {
-      this.icarus.y = 360;
-      this.icarus.setVelocityY(-100);
-    }
+    this.lives = 0;
+    this.triggerGameOver(reason);
   }
 
   checkOverlap(a, b) {
@@ -1102,6 +1213,8 @@ export class GameScene extends Phaser.Scene {
         reason = 'The sun melted your wings!';
       } else if (this.lastDamageSource === 'rain') {
         reason = 'The heavy storm rain soaked your wings!';
+      } else if (this.lastDamageSource === 'wind') {
+        reason = 'Torn apart by howling gales!';
       }
       this.takeHit(reason);
       if (this.isGameOver) return;
